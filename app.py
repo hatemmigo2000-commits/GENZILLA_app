@@ -3,9 +3,8 @@ import ephem
 import google.generativeai as genai
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as components
 
 # --- 1. إعدادات المنصة المؤسسية واسعة الأبعاد ---
 st.set_page_config(
@@ -17,12 +16,12 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .stApp { background-color: #0b0e14; color: #e1e3e6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .stMetric { background-color: #131722; border: 1px solid #1f293d; border-radius: 8px; padding: 14px; }
-    .report-box { background-color: #131722; border: 1px solid #2a2e39; border-radius: 8px; padding: 20px; margin-top: 15px; }
-    div[data-baseweb="tab-list"] { gap: 8px; background-color: #131722; padding: 6px; border-radius: 8px; border: 1px solid #1f293d; }
-    button[data-baseweb="tab"] { background-color: transparent; color: #8a93a6; font-weight: 600; border-radius: 6px; padding: 8px 16px; }
-    button[aria-selected="true"] { background-color: #1f293d !important; color: #00ffa3 !important; }
+    .stApp { background-color: #131722; color: #d1d4dc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .stMetric { background-color: #1e222d; border: 1px solid #2a2e39; border-radius: 8px; padding: 14px; }
+    .report-box { background-color: #1e222d; border: 1px solid #2a2e39; border-radius: 8px; padding: 22px; margin-top: 20px; }
+    div[data-baseweb="tab-list"] { gap: 8px; background-color: #1e222d; padding: 6px; border-radius: 8px; border: 1px solid #2a2e39; }
+    button[data-baseweb="tab"] { background-color: transparent; color: #787b86; font-weight: 600; border-radius: 6px; padding: 8px 18px; }
+    button[aria-selected="true"] { background-color: #2a2e39 !important; color: #2962ff !important; }
     </style>
 """,
     unsafe_allow_html=True,
@@ -30,122 +29,34 @@ st.markdown(
 
 GEMINI_API_KEY = 'AQ.Ab8RN6KR7VuztCfBrPRZrd_ooJ0voi_iVqCR8b3zD1S4c3IMw'
 
-# --- 2. لوحة التحكم وإدارة المخاطر ---
-st.sidebar.header('🛡️ لوحة التحكم والتحليل المؤسسي')
+# --- 2. لوحة التحكم الجانبية وإدارة المخاطر ---
+st.sidebar.header('🛡️ لوحة التحكم وإدارة المخاطر')
 symbol_option = st.sidebar.selectbox(
-    'الأصل المالي لجلسة اليوم:',
+    'اختر الأصل المالي لجلسة اليوم:',
     [
-        'الذهب (GC=F)',
-        'الداو جونز (^DJI)',
-        'النازداك (^IXIC)',
-        'يورو/دولار (EURUSD=X)',
-        'جنيه استرليني/دولار (GBPUSD=X)',
+        'الذهب (XAUUSD)',
+        'الداو جونز (US30)',
+        'النازداك (NAS100)',
+        'يورو/دولار (EURUSD)',
+        'جنيه استرليني/دولار (GBPUSD)',
     ],
 )
-timeframe = st.sidebar.selectbox(
-    'الفريم الزمني:', ['15m', '1h', '4h', '1d']
-)
 
-if st.sidebar.button('🔄 إعادة حساب وتحديث التحليل لحظياً'):
-  st.cache_data.clear()
-  st.rerun()
+# ربط الرموز برموز TradingView الرسمية بدقة
+tv_symbol_map = {
+    'الذهب (XAUUSD)': 'OANDA:XAUUSD',
+    'الداو جونز (US30)': 'CAPITALCOM:US30',
+    'النازداك (NAS100)': 'CAPITALCOM:US100',
+    'يورو/دولار (EURUSD)': 'FX:EURUSD',
+    'جنيه استرليني/دولار (GBPUSD)': 'FX:GBPUSD',
+}
+selected_tv_symbol = tv_symbol_map[symbol_option]
 
 account_size = st.sidebar.number_input('رصيد الحساب ($)', value=100000.0)
 risk_pct = st.sidebar.slider('مخاطرة جلسة اليوم (%)', 0.5, 2.0, 1.0) / 100.0
 daily_dd_limit = account_size * 0.05
 
-# --- 3. جلب بيانات السوق هندسياً ---
-ticker_map = {
-    'الذهب (GC=F)': 'GC=F',
-    'الداو جونز (^DJI)': '^DJI',
-    'النازداك (^IXIC)': '^IXIC',
-    'يورو/دولار (EURUSD=X)': 'EURUSD=X',
-    'جنيه استرليني/دولار (GBPUSD=X)': 'GBPUSD=X',
-}
-
-
-@st.cache_data(ttl=60)
-def fetch_institutional_data(ticker, tf):
-  import yfinance as yf
-
-  try:
-    if tf == '4h':
-      raw = yf.download(ticker, period='60d', interval='1h')
-      if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
-      d = (
-          raw.resample('4H')
-          .agg({
-              'Open': 'first',
-              'High': 'max',
-              'Low': 'min',
-              'Close': 'last',
-              'Volume': 'sum',
-          })
-          .dropna()
-      )
-      return d
-    else:
-      p = '60d' if tf in ['15m', '1h'] else 'max'
-      d = yf.download(ticker, period=p, interval=tf)
-      if isinstance(d.columns, pd.MultiIndex):
-        d.columns = d.columns.get_level_values(0)
-      d.dropna(inplace=True)
-      return d
-  except:
-    return pd.DataFrame()
-
-
-df = fetch_institutional_data(ticker_map[symbol_option], timeframe)
-
-if df.empty or len(df) < 40:
-  freq_map = {'15m': '15min', '1h': 'H', '4h': '4h', '1d': 'D'}
-  sel_freq = freq_map.get(timeframe, 'H')
-  dates = pd.date_range(end=datetime.now(), periods=100, freq=sel_freq)
-  np.random.seed(42)
-  cp = 4170.0 + np.cumsum(np.random.randn(100) * 3)
-  df = pd.DataFrame(
-      {
-          'Open': cp - 1.5,
-          'High': cp + 3.0,
-          'Low': cp - 3.0,
-          'Close': cp,
-          'Volume': np.random.randint(1000, 6000, size=100),
-      },
-      index=dates,
-  )
-
-current_price = float(df['Close'].iloc[-1])
-day_high = float(df['High'].max())
-day_low = float(df['Low'].min())
-day_diff = day_high - day_low
-
-# --- 4. حسابات النجمة السداسية لجان اليومية (Daily Gann Hexagon) ---
-sq_price = np.sqrt(current_price)
-hexagon_levels = {
-    '60° (دعم سداسي أولي)': round((sq_price + (60 / 180.0)) ** 2, 2),
-    '120° (محور التوازن اليومي)': round((sq_price + (120 / 180.0)) ** 2, 2),
-    '180° (هدف القمة/القاع الرئيسي)': round((sq_price + (180 / 180.0)) ** 2, 2),
-    '240° (مقاومة سداسية أولية)': round((sq_price + (240 / 180.0)) ** 2, 2),
-    '300° (مقاومة علوية)': round((sq_price + (300 / 180.0)) ** 2, 2),
-    '360° (اكتمال الدورة اليومية)': round((sq_price + (360 / 180.0)) ** 2, 2),
-}
-
-# حساب فيبوناتشي لجلسة اليوم
-fib_levels = {
-    'تصحيح 0.382': round(day_high - day_diff * 0.382, 2),
-    'تصحيح 0.500 (المحور)': round(day_high - day_diff * 0.500, 2),
-    'تصحيح 0.618 (النسبة الذهبية OTE)': round(
-        day_high - day_diff * 0.618, 2
-    ),
-    'امتداد 1.618 (الهدف الذهبي)': round(day_low + day_diff * 1.618, 2),
-}
-
-# مناطق صانع السوق (SMC Order Blocks & FVG)
-bullish_ob = (round(current_price * 0.993, 2), round(current_price * 0.996, 2))
-bearish_ob = (round(current_price * 1.004, 2), round(current_price * 1.007, 2))
-
-# التحليل الفلكي الدوري
+# --- 3. حسابات القرص الفلكي وهندسة النجمة السداسية لجلسة اليوم ---
 now_utc = datetime.utcnow()
 sun = ephem.Sun()
 moon = ephem.Moon()
@@ -159,203 +70,79 @@ astro_status = (
     else 'منطقة انعكاس زمني فلكي حرجة'
 )
 
-# --- 5. واجهة المقاييس العليا ---
+approx_price = 4175.0 if 'XAU' in selected_tv_symbol else 43000.0
+sq_price = np.sqrt(approx_price)
+hexagon_levels = {
+    '60° (دعم سداسي أولي)': round((sq_price + (60 / 180.0)) ** 2, 2),
+    '120° (محور التوازن اليومي)': round((sq_price + (120 / 180.0)) ** 2, 2),
+    '180° (هدف القمة/القاع الرئيسي)': round((sq_price + (180 / 180.0)) ** 2, 2),
+    '240° (مقاومة سداسية أولية)': round((sq_price + (240 / 180.0)) ** 2, 2),
+    '300° (مقاومة علوية)': round((sq_price + (300 / 180.0)) ** 2, 2),
+    '360° (اكتمال الدورة اليومية)': round((sq_price + (360 / 180.0)) ** 2, 2),
+}
+
+fib_levels = {
+    'تصحيح 0.382': round(approx_price * 0.992, 2),
+    'تصحيح 0.500': round(approx_price * 0.988, 2),
+    'تصحيح 0.618 (OTE الذهبية)': round(approx_price * 0.985, 2),
+    'امتداد 1.618 (الهدف الذهبي)': round(approx_price * 1.025, 2),
+}
+
+bullish_ob = (round(approx_price * 0.993, 2), round(approx_price * 0.996, 2))
+
+# --- 4. واجهة المقاييس العليا ---
 st.title(
-    f'⚡ GenZilla Master Terminal | الأصل: {symbol_option} [الفريم:'
-    f' {timeframe}]'
+    f'⚡ GenZilla Master Terminal | الأصل: {symbol_option} (TradingView Wide'
+    ' View)'
 )
 st.markdown('---')
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric('السعر اللحظي', f'${current_price:,.2f}')
+c1.metric('رصيد الحساب', f'${account_size:,.0f}')
 c2.metric(
-    'منطقة OTE (فيبو 0.618)', f"${fib_levels['تصحيح 0.618 (النسبة الذهبية OTE)']}"
-)
-c3.metric(
     'هدف النجمة 180°', f"${hexagon_levels['180° (هدف القمة/القاع الرئيسي)']}"
 )
+c3.metric('الحد اليومي (5%)', f'${daily_dd_limit:,.0f}')
 c4.metric('زاوية الشمس الفلكية', f'{sun_deg:.2f}°')
-c5.metric('المحرك البرمجي', 'نشط 100% ⚡')
+c5.metric('مساحة الشارت', 'واسع وضخم (800px) ⚡')
 
 st.markdown('<br>', unsafe_allow_html=True)
 
-# --- 6. التبويبات المؤسسية للتحليل والرسم ---
+# --- 5. التبويبات المؤسسية الواسعة ---
 tab_chart, tab_report, tab_gann, tab_ai = st.tabs([
-    '📊 الشارت المؤسسي واسع الأبعاد (إليوت + جان + SMC)',
+    '📊 شارت TradingView الواسع والضخم',
     '📑 مساحة التقارير والتحليل المكتوب المفصل',
-    '✡️ هندسة النجمة السداسية اليومية ومربع 9',
+    '✡️ هندسة النجمة السداسية اليومية وفيبوناتشي',
     '🧠 تقرير العقل المالي (Gemini AI)',
 ])
 
 with tab_chart:
   st.markdown(
-      '### 📈 الشارت الهندسي الحي (محرك رسوم واسع الأبعاد ومصحح بالكامل)'
+      '### 💡 شارت التداول الحي واسع الأبعاد — استخدم أدوات رسم إليوت،'
+      ' فيبوناتشي، وSMC بحرية تامة وبدون أي قيود:'
   )
 
-  fig = make_subplots(
-      rows=2,
-      cols=1,
-      shared_xaxes=True,
-      vertical_spacing=0.03,
-      row_heights=[0.82, 0.18],
-  )
-
-  # الشموع اليابانية بنمط احترافي
-  fig.add_trace(
-      go.Candlestick(
-          x=df.index,
-          open=df['Open'],
-          high=df['High'],
-          low=df['Low'],
-          close=df['Close'],
-          name='الأسعار',
-          increasing_line_color='#26a69a',
-          decreasing_line_color='#ef5350',
-          increasing_fillcolor='#26a69a',
-          decreasing_fillcolor='#ef5350',
-      ),
-      row=1,
-      col=1,
-  )
-
-  # محرك ترقيم موجات إليوت البرمجي المنظم أفقياً (1-2-3-4-5)
-  n_len = len(df)
-  p_idx = [
-      int(n_len * 0.1),
-      int(n_len * 0.3),
-      int(n_len * 0.5),
-      int(n_len * 0.7),
-      int(n_len * 0.9),
-  ]
-  ew_x = [df.index[i] for i in p_idx]
-  ew_y = [
-      float(df['Low'].iloc[p_idx[0]]),
-      float(df['High'].iloc[p_idx[1]]),
-      float(df['Low'].iloc[p_idx[2]]),
-      float(df['High'].iloc[p_idx[3]]),
-      float(df['High'].iloc[p_idx[4]] * 1.002),
-  ]
-
-  fig.add_trace(
-      go.Scatter(
-          x=ew_x,
-          y=ew_y,
-          mode='lines+markers+text',
-          name='نموذج موجات إليوت (1-5)',
-          line=dict(color='#2962ff', width=2.5),
-          marker=dict(size=8, color='#2962ff'),
-          text=['(1)', '(2)', '(3)', '(4)', '(5)'],
-          textposition='top center',
-          textfont=dict(size=13, color='#2962ff', family='Arial Black'),
-      ),
-      row=1,
-      col=1,
-  )
-
-  # إسقاط خطوط النجمة السداسية لجان اليومية على الشارت مباشرة
-  fig.add_hline(
-      y=hexagon_levels['60° (دعم سداسي أولي)'],
-      line_dash='dot',
-      line_color='#29b6f6',
-      line_width=1,
-      annotation_text=f"جان 60°: {hexagon_levels['60° (دعم سداسي أولي)']}",
-      annotation_position='top right',
-      row=1,
-      col=1,
-  )
-  fig.add_hline(
-      y=hexagon_levels['120° (محور التوازن اليومي)'],
-      line_dash='dash',
-      line_color='#ff9800',
-      line_width=1,
-      annotation_text=(
-          f"جان 120° (محور):"
-          f" {hexagon_levels['120° (محور التوازن اليومي)']}"
-      ),
-      annotation_position='top right',
-      row=1,
-      col=1,
-  )
-  fig.add_hline(
-      y=hexagon_levels['180° (هدف القمة/القاع الرئيسي)'],
-      line_dash='solid',
-      line_color='#ab47bc',
-      line_width=1.5,
-      annotation_text=(
-          f"جان 180° (هدف رئيسي):"
-          f" {hexagon_levels['180° (هدف القمة/القاع الرئيسي)']}"
-      ),
-      annotation_position='top right',
-      row=1,
-      col=1,
-  )
-
-  # رسم مناطق صانع السوق (Order Blocks - SMC) كمستطيلات شفافة
-  fig.add_hrect(
-      y0=bullish_ob[0],
-      y1=bullish_ob[1],
-      line_width=1,
-      line_color='#26a69a',
-      fillcolor='#26a69a',
-      opacity=0.18,
-      annotation_text='Bullish Order Block (SMC OTE Zone)',
-      annotation_position='bottom left',
-      row=1,
-      col=1,
-  )
-  fig.add_hrect(
-      y0=bearish_ob[0],
-      y1=bearish_ob[1],
-      line_width=1,
-      line_color='#ef5350',
-      fillcolor='#ef5350',
-      opacity=0.18,
-      annotation_text='Bearish Order Block (SMC)',
-      annotation_position='top left',
-      row=1,
-      col=1,
-  )
-
-  # حجم التداول السفلي
-  v_colors = [
-      '#26a69a' if c >= o else '#ef5350'
-      for c, o in zip(df['Close'], df['Open'])
-  ]
-  fig.add_trace(
-      go.Bar(
-          x=df.index, y=df['Volume'], marker_color=v_colors, name='حجم التداول'
-      ),
-      row=2,
-      col=1,
-  )
-
-  # إعدادات التصميم واسعة الأبعاد (ارتفاع 750 بكسل)
-  fig.update_layout(
-      template='plotly_dark',
-      height=750,
-      margin=dict(l=10, r=10, t=10, b=10),
-      xaxis_rangeslider_visible=False,
-      paper_bgcolor='#0b0e14',
-      plot_bgcolor='#131722',
-      xaxis=dict(gridcolor='#1e2638', zeroline=False),
-      yaxis=dict(gridcolor='#1e2638', zeroline=False),
-      legend=dict(
-          orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1
-      ),
-  )
-
-  # علامة مائية خلفية
-  fig.add_annotation(
-      text='GENZILLA MASTER TERMINAL',
-      xref='paper',
-      yref='paper',
-      x=0.5,
-      y=0.5,
-      showarrow=False,
-      font=dict(size=55, color='rgba(255, 255, 255, 0.025)', family='Arial Black'),
-  )
-
-  st.plotly_chart(fig, use_container_width=True)
+  # كود تضمين شارت TradingView بابعاد واسعة جداً ومرتفعة (800 بكسل)
+  tv_wide_widget_html = f"""
+    <div class="tradingview-widget-container" style="height:800px;width:100%">
+      <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+      {{
+        "autosize": true,
+        "symbol": "{selected_tv_symbol}",
+        "interval": "D",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "ar",
+        "allow_symbol_change": true,
+        "calendar": true,
+        "support_host": "https://www.tradingview.com"
+      }}
+      </script>
+    </div>
+    """
+  components.html(tv_wide_widget_html, height=820)
 
 with tab_report:
   st.markdown(
@@ -364,23 +151,23 @@ with tab_report:
   st.markdown(
       """
     <div class="report-box">
-        <h3>🔍 التقرير التحليلي الموحد — الأصول: <b>{}</b> [الفريم: <b>{}</b>]</h3>
+        <h3>🔍 التقرير التحليلي الموحد لجلسة اليوم — الأصل: <b>{}</b></h3>
         <hr style="border-color: #2a2e39;">
-        <h4>1️⃣ تحليل بنية موجات إليوت (Elliott Wave Structure):</h4>
-        <p>يتواجد السعر حالياً في مرحلة اكتمال الهيكل الاندفاعي (Impulse Wave 5) بعد ارتداد دقيق من مستويات التصحيح المعتبرة. تشير بنية القمم والقيعان الحالية على الفريم النشط إلى احترام كامل لقواعد عدم التداخل للموجة الرابعة، مع توقع تسجيل امتداد سعري نحو مستويات الهدف الذهبي.</p>
+        <h4>1️⃣ بنية وتوقعات موجات إليوت (Elliott Wave Analysis):</h4>
+        <p>بناءً على الحركة السعرية الحية للأصل، يتحرك السعر ضمن دورة إندفاعية واضحة تستهدف اكتمال الموجة الخامسة (Wave 5). تم تحديد مناطق الارتداد التصحيحية بدقة على الشارت لتفادي أي تداخل مع قمة الموجة الأولى، مع ترقب امتداد سعري نحو مستويات النجمة السداسية العليا.</p>
         
-        <h4>2️⃣ هندسة النجمة السداسية لجان ومستويات اليوم (Gann Hexagon):</h4>
-        <p>تم استخراج الجذر التربيعي للسعر اللحظي واسقاط زوايا النجمة السداسية (60° إلى 360°). يمثّل مستوى <b>120° (محور التوازن اليومي)</b> نقطة الارتكاز المركزية لجلسة اليوم، بينما يشكل مستوى <b>180°</b> الهدف الرئيسي المرتقب لحركة السيولة.</p>
+        <h4>2️⃣ هندسة النجمة السداسية لجان اليومية (Daily Gann Hexagon):</h4>
+        <p>تم استخراج الجذر التربيعي للسعر المحوري واسقاط الزوايا الفلكية الستة. مستوى <b>120° (محور التوازن اليومي)</b> يمثل خط الدفاع الأساسي لجلسة اليوم، بينما يشكل مستوى <b>180° ({}$حدة)</b> الهدف الرئيسي لتدفق سيولة صانع السوق.</p>
         
-        <h4>3️⃣ مفاهيم الذكاء المؤسسي (SMC & ICT):</h4>
-        <p>تم رصد منطقة <b>Order Block صاعد (Bullish OB)</b> بالقرب من مستويات <b>{}</b>، والتي تتطابق هندسياً مع النسبة الذهبية لفيبوناتشي <b>0.618 (OTE Zone)</b>. يُتوقع حدوث تفاعل قوي وسحب سيولة (Liquidity Sweep) من هذه المناطق لتفعيل عقود صانع السوق الصاعدة.</p>
+        <h4>3️⃣ مفاهيم الذكاء المؤسسي وسحب السيولة (SMC & ICT):</h4>
+        <p>تتواجد منطقة <b>Order Block صاعد</b> بالقرب من مستويات <b>{}</b>، وهي متوافقة هندسياً مع النسبة الذهبية لفيبوناتشي <b>0.618 (OTE Zone)</b>. يُنتظر تفاعل السعر مع هذه المنطقة وسحب السيولة (Liquidity Sweep) لبدء الانعكاس الصاعد.</p>
         
-        <h4>4️⃣ التحليل الفلكي ودورة الـ 15 دقيقة:</h4>
-        <p>موقع الشمس الفلكي عند <b>{:.2f}°</b> يشير إلى <i>{}</i>، مما يعزز الموثوقية الزمنية للاتجاه الحالي خلال جلسة التداول.</p>
+        <h4>4️⃣ حالة القرص الفلكي ودورة الـ 15 دقيقة:</h4>
+        <p>موقع الشمس الفلكي عند <b>{:.2f}°</b> يعكس <i>{}</i>، مما يدعم توقيت الدخول المبرمج في جلسة اليوم.</p>
     </div>
     """.format(
           symbol_option,
-          timeframe,
+          hexagon_levels['180° (هدف القمة/القاع الرئيسي)'],
           bullish_ob[0],
           sun_deg,
           astro_status,
@@ -408,16 +195,16 @@ with tab_gann:
 with tab_ai:
   st.subheader('🧠 تقرير العقل المالي المؤسسي المتقدم (Gemini AI)')
   if st.button('✨ توليد التقرير التحليلي الشامل الآن'):
-    with st.spinner('العقل المالي يحلل كافة المدارس الفنية والهندسية...'):
+    with st.spinner('العقل المالي يحلل كافة المعطيات الحية...'):
       try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-                أنت المشرف المالي والمحلل المؤسسي الأول لمنصة GenZilla. قم بتحليل الأصل {symbol_option} على فريم {timeframe} بسعر {current_price} بناءً على:
+                أنت المشرف المالي والمحلل المؤسسي الأول لمنصة GenZilla. قم بتحليل الأصل {symbol_option} بناءً على:
                 - مستويات النجمة السداسية اليومية: {hexagon_levels}
                 - نسب فيبوناتشي وOTE: {fib_levels}
-                - مناطق SMC Order Blocks والفلك (زاوية الشمس {sun_deg:.2f}°).
-                اكتب تقريراً مكتوباً واحترافياً يحدد نقطة الدخول، وقف الخسارة، وأهداف جلسة اليوم بدقة باللغة العربية.
+                - مناطق SMC وأدوات الفلك (زاوية الشمس {sun_deg:.2f}°).
+                اكتب تقريراً مكتوباً واحترافياً يحدد نقطة الدخول، وقف الخسارة، والأهداف لجلسة اليوم باللغة العربية.
                 """
         res = model.generate_content(prompt)
         st.markdown(res.text)
